@@ -11,7 +11,7 @@ class SafeQueue
 {
 public:
   SafeQueue(size_t max_size)
-    : q(), m(), c(), max_size(max_size)
+    : q(), m(), empty_cv(), full_cv(), max_size(max_size)
   {}
 
   ~SafeQueue(void)
@@ -24,10 +24,10 @@ public:
     while(q.size()==max_size)
     {
       // release lock as long as the wait and reaquire it afterwards.
-      c.wait(lock);
+      full_cv.wait(lock);
     }
     q.push(t);
-    c.notify_one();
+    empty_cv.notify_one();
   }
 
   // Get the "front"-element.
@@ -38,17 +38,18 @@ public:
     while(q.empty())
     {
       // release lock as long as the wait and reaquire it afterwards.
-      c.wait(lock);
+      empty_cv.wait(lock);
     }
     T val = q.front();
     q.pop();
+    full_cv.notify_one();
     return val;
   }
 
 private:
   std::queue<T> q;
   mutable std::mutex m;
-  std::condition_variable c;
+  std::condition_variable empty_cv, full_cv;
   size_t max_size;
 };
 

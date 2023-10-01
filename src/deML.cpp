@@ -605,7 +605,7 @@ typedef std::tuple<rgAssignment, FastQObj *, FastQObj *, FastQObj *, FastQObj *>
 class Producer{
 public:
   Producer(size_t max_queue_size, size_t n_clients, string r1f, string i1f, string r2f, string i2f) :
-    queue(max_queue_size), forwardfq(r1f), index1fq(i1f), reversefq(r2f), index2fq(i2f)
+    queue(max_queue_size), n_clients(n_clients), forwardfq(r1f), index1fq(i1f), reversefq(r2f), index2fq(i2f)
   {}
 
   void operator()(void){
@@ -680,8 +680,8 @@ public:
   }
 
   SafeQueue<FastQTuple> queue;  
-  string forwardfq, index1fq, reversefq, index2fq;
   size_t n_clients;
+  string forwardfq, index1fq, reversefq, index2fq;
 };
 
 class FastQWorker{
@@ -804,10 +804,10 @@ public:
             //////////////////////////
             //  END update counters //
             //////////////////////////
-
             out_queue.enqueue(ResultFastQTuple(rgReturn, ffo, rfo, i1fo, i2fo));
 	}
-	out_queue.enqueue(ResultFastQTuple(rgAssignment(), 0, 0, 0, 0));
+        rgAssignment tra;
+	out_queue.enqueue(ResultFastQTuple(tra, 0, 0, 0, 0));
     }
 
     SafeQueue<FastQTuple>& in_queue;
@@ -998,6 +998,7 @@ void processFastq(string           forwardfq,
     //initialize thread objects
     Producer producer(max_queue_size, num_worker_threads, forwardfq, index1fq, reversefq, index2fq);
     Consumer consumer(max_queue_size, num_worker_threads, prefixOut);
+//    FastQWorker worker(producer.queue, consumer.queue, printSummary, printError);
     vector<FastQWorker> workers(
         num_worker_threads,
         FastQWorker(producer.queue, consumer.queue, printSummary, printError)
@@ -1006,14 +1007,16 @@ void processFastq(string           forwardfq,
     //start threads
     std::thread producer_thread(std::ref(producer));
     std::thread consumer_thread(std::ref(consumer));
+//    std::thread worker_thread(std::ref(worker));
     vector<std::thread> worker_threads;
     for(auto& worker: workers){
-        worker_threads.push_back(std::thread(worker));
+        worker_threads.push_back(std::thread(std::ref(worker)));
     }
 
     //join threads
     producer_thread.join();
     consumer_thread.join();
+//    worker_thread.join();
     for(auto& worker_thread: worker_threads){
         worker_thread.join();
     }
