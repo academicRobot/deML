@@ -5,8 +5,8 @@ SIMPLEJSON= $(realpath ../SimpleJSON/)
 
 
 
-CXXFLAGS+= -O3 -Wall -I${BAMTOOLS}/src/ -I${LIBGAB} -I${LIBGAB}/gzstream/  -I${SIMPLEJSON}/src/
-LDLIBS+= ${BAMTOOLS}/build/src/api/libbamtools.a ${LIBGAB}/libgab.a ${LIBGAB}/gzstream/libgzstream.a  -lm -lz
+CXXFLAGS+=-std=c++11 -O3 -Wall -I${BAMTOOLS}/src/ -I${LIBGAB} -I${LIBGAB}/gzstream/  -I${SIMPLEJSON}/src/
+LDLIBS+=/usr/lib/x86_64-linux-gnu/libbamtools.a ${LIBGAB}/libgab.a ${LIBGAB}/gzstream/libgzstream.a  -lm -lz
 
 CXX=g++ #-g -pg
 
