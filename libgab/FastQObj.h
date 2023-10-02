@@ -31,6 +31,7 @@ public:
 
     string * getQual() const;
     void printFastaSeqWithBreaks(ostream & stro) const;
+    void formatFastQ(std::string& str) const;
 
     friend ostream& operator<<(ostream& str, FastQObj const& fqo){
 	if(fqo.isFasta)

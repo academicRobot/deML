@@ -6,6 +6,7 @@
 #include <sstream>
 #include <map>
 #include <thread>
+#include <chrono>
 #include <gzstream.h>
 
 
@@ -687,9 +688,189 @@ cout << "in_queue " << queue.size_approx() << endl;
   string forwardfq, index1fq, reversefq, index2fq;
 };
 
+class FileThread{
+public:
+    FileThread(const string& prefixOut, const string& predictedGroup, bool hasRevBool, bool hasId2Bool, size_t n_producers) : queue((10 + 2 *  n_producers) * 32){
+        //initialize writer
+        rg2FqWriter = new fqwriters();
+
+        string outpairr1   = prefixOut+"/"+predictedGroup+"_"+"r1.fq.gz";
+        string outpairr2   = prefixOut+"/"+predictedGroup+"_"+"r2.fq.gz";
+        string outpairi1   = prefixOut+"/"+predictedGroup+"_"+"i1.fq.gz";
+        string outpairi2   = prefixOut+"/"+predictedGroup+"_"+"i2.fq.gz";
+
+        string outpairr1f   = prefixOut+"/"+predictedGroup+"_"+"r1.fail.fq.gz";
+        string outpairr2f   = prefixOut+"/"+predictedGroup+"_"+"r2.fail.fq.gz";
+        string outpairi1f   = prefixOut+"/"+predictedGroup+"_"+"i1.fail.fq.gz";
+        string outpairi2f   = prefixOut+"/"+predictedGroup+"_"+"i2.fail.fq.gz";
+
+        rg2FqWriter->pairr1.open( outpairr1.c_str(),  ios::out);
+        rg2FqWriter->pairr1f.open(outpairr1f.c_str(), ios::out);
+	    	    
+        rg2FqWriter->pairi1.open( outpairi1.c_str(),  ios::out);
+        rg2FqWriter->pairi1f.open(outpairi1f.c_str(), ios::out);
+
+        if(!rg2FqWriter->pairr1.good()){
+            checkFD(); 
+            cerr<<"Cannot write to file "<< outpairr1 <<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl;
+            exit(1); 
+        }
+        if(!rg2FqWriter->pairr1f.good()){
+            checkFD(); 
+            cerr<<"Cannot write to file "<< outpairr1f<<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl; 
+            exit(1); 
+        }
+	    	    
+        if(!rg2FqWriter->pairi1.good()){
+            checkFD(); 
+            cerr<<"Cannot write to file "<< outpairi1 <<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl; 
+            exit(1); 
+        }
+        if(!rg2FqWriter->pairi1f.good()){
+            checkFD(); 
+            cerr<<"Cannot write to file "<< outpairi1f<<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl;
+            exit(1); 
+        }
+
+        if(hasId2Bool){
+            rg2FqWriter->pairi2.open( outpairi2.c_str(),  ios::out);
+            rg2FqWriter->pairi2f.open(outpairi2f.c_str(), ios::out);
+
+            if(!rg2FqWriter->pairi2.good()){
+                checkFD(); 
+                cerr<<"Cannot write to file "<< outpairi2 <<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl;
+                exit(1);
+            }
+            if(!rg2FqWriter->pairi2f.good()){
+                checkFD(); cerr<<"Cannot write to file "<< outpairi2f<<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl; 
+                exit(1); 
+            }
+        }
+
+        if(hasRevBool){
+            rg2FqWriter->pairr2.open( outpairr2.c_str(),  ios::out);
+            rg2FqWriter->pairr2f.open(outpairr2f.c_str(), ios::out);
+
+            if(!rg2FqWriter->pairr2.good()){
+                checkFD(); 
+                cerr<<"Cannot write to file "<<outpairr2 <<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl;
+                exit(1);
+            }
+            if(!rg2FqWriter->pairr2f.good()){
+                checkFD();
+                cerr<<"Cannot write to file "<<outpairr2f<<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl; 
+                exit(1); 
+            }	   
+        }
+       
+        //start thread
+        tthread = std::thread(&FileThread::flush, this);
+    }
+    ~FileThread(void){
+        ResultFastQTuple dummy;
+        queue.enqueue(dummy);
+        tthread.join(); //flush will end when it gets the dummy
+
+        rg2FqWriter->pairr1.close( );
+        rg2FqWriter->pairr1f.close();
+	
+        rg2FqWriter->pairi1.close( );
+        rg2FqWriter->pairi1f.close();
+	
+        if(!rg2FqWriter->pairi2){
+            rg2FqWriter->pairi2.close( );
+        }
+        if(!rg2FqWriter->pairi2f){
+            rg2FqWriter->pairi2f.close();
+        }
+        if(!rg2FqWriter->pairr2){
+            rg2FqWriter->pairr2.close( );
+        }
+        if(!rg2FqWriter->pairr2f){
+            rg2FqWriter->pairr2f.close();	   
+        }
+        delete rg2FqWriter;
+    }
+    void enqueue(const ResultFastQTuple& rft){
+        cout << "eq" << endl;
+        while(!queue.try_enqueue(rft)){
+            std::this_thread::sleep_for(std::chrono::milliseconds(1)); //dude, chill
+            cout << "   sleep" << endl;
+        }
+        cout << "   done" << endl;
+    }
+    void flush(void){
+        size_t count;
+	bool done = false;
+        while(!done){
+            count = queue.wait_dequeue_bulk(buffer, buffer_size);
+	    for(size_t i=0; i<count && !done; ++i){
+                const ResultFastQTuple& rft(buffer[i]);
+                if(get<1>(rft).empty()){
+                    done = true;
+                }
+                else{
+                    if(get<0>(rft).conflict  || get<0>(rft).wrong || get<0>(rft).unknown ){ //if the reads fail to meet thresholds
+                        rg2FqWriter->pairr1f << get<1>(rft) <<endl;
+                        rg2FqWriter->pairi1f << get<3>(rft) <<endl;
+                        if(!get<4>(rft).empty()){
+                            rg2FqWriter->pairi2f << get<4>(rft) <<endl;
+                        }
+
+                        if(!get<2>(rft).empty()){
+                            rg2FqWriter->pairr2f << get<2>(rft) <<endl;
+                        }
+                    }else{
+                        rg2FqWriter->pairr1 << get<1>(rft) <<endl;
+                        rg2FqWriter->pairi1 << get<3>(rft) <<endl;
+                        if(!get<4>(rft).empty()){
+                            rg2FqWriter->pairi2 << get<4>(rft) <<endl;
+                        }
+	    
+                        if(!get<2>(rft).empty()){
+                            rg2FqWriter->pairr2 << get<2>(rft) <<endl;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    moodycamel::BlockingConcurrentQueue<ResultFastQTuple> queue;
+    size_t buffer_size = 100;
+    ResultFastQTuple buffer[100];
+    fqwriters* rg2FqWriter;
+    std::thread tthread;
+};
+
+class FileSorter{
+public:
+    FileSorter(string prefix, vector<string>& pgNames, bool hasRevBool, bool hasId2Bool, size_t num_worker_threads) {
+        for(auto& pgName: pgNames){
+            fileThreads[pgName] = new FileThread(prefix, pgName, hasRevBool, hasId2Bool, num_worker_threads);
+        }
+	fileThreads["unknown"] = new FileThread(prefix, "unknown", hasRevBool, hasId2Bool, num_worker_threads);
+    }
+    ~FileSorter(void){
+        for(auto& kvp: fileThreads){
+            delete kvp.second;
+        }
+    }
+    void enqueue(const ResultFastQTuple& rft){
+        const string& pg = get<0>(rft).predictedGroup;
+        if(pg.empty()){
+            fileThreads.at("unknown")->enqueue(rft);
+        }
+	else{
+            fileThreads.at(pg)->enqueue(rft);
+        }
+    }
+private:
+    map<string,FileThread*> fileThreads;
+};
+
 class FastQWorker{
 public:
-    FastQWorker(moodycamel::BlockingConcurrentQueue<FastQTuple>& in_queue, moodycamel::BlockingConcurrentQueue<ResultFastQTuple>& out_queue, bool printSummary, bool printError) :
+    FastQWorker(moodycamel::BlockingConcurrentQueue<FastQTuple>& in_queue, FileSorter& out_queue, bool printSummary, bool printError) :
         in_queue(in_queue), out_queue(out_queue), 
         printSummary(printSummary), printError(printError)
     {}
@@ -814,194 +995,23 @@ public:
 	    if(rfo){rfo->formatFastQ(rfo_s);} else {rfo_s="";}
 	    i1fo->formatFastQ(i1fo_s);
 	    if(i2fo){i2fo->formatFastQ(i2fo_s);} else {i2fo_s="";}
-//            out_queue.enqueue(ResultFastQTuple(rgReturn, ffo_s, rfo_s, i1fo_s, i2fo_s));
-      	    while(!out_queue.try_enqueue(ResultFastQTuple(rgReturn, ffo_s, rfo_s, i1fo_s, i2fo_s))){}
+
+      	    out_queue.enqueue(ResultFastQTuple(rgReturn, ffo_s, rfo_s, i1fo_s, i2fo_s));
 	    delete ffo;
 	    delete i1fo;
 	    if(rfo) delete rfo;
 	    if(i2fo) delete i2fo;
 	}
-        rgAssignment tra;
-	out_queue.enqueue(ResultFastQTuple(tra, "", "", "", ""));
     }
 
     moodycamel::BlockingConcurrentQueue<FastQTuple>& in_queue;  
 //    SafeQueue<FastQTuple>& in_queue;
 //    SafeQueue<ResultFastQTuple>& out_queue;
-    moodycamel::BlockingConcurrentQueue<ResultFastQTuple>& out_queue;  
+    FileSorter& out_queue;  
     map<string,tallyForRG> namesMap; //a map name of RG to count of how many observed
     bool printSummary, printError;
     map<string,int> conflictSeq, unknownSeq, wrongSeq;
 };
-
-class Consumer{
-public:
-    Consumer(size_t max_queue_size, size_t num_clients, string prefixOut) : 
-        queue(max_queue_size), num_clients(num_clients), totalSeqs(0), prefixOut(prefixOut)
-    {}
-
-    void operator()(void){
-        map<string,fqwriters *> rg2FqWriters;
-        fqwriters* rg2FqWriter;
-	size_t client_count = 0;
-/*        FastQObj * ffo=0;
-        FastQObj * rfo=0;
-        FastQObj * i1fo=0;
-        FastQObj * i2fo=0;*/
-	string ffo, rfo, i1fo, i2fo;
-        rgAssignment rgReturn;
-	string predictedGroup;
-        ResultFastQTuple rft;
-
-        while(true){
-cout << "out_queue " << queue.size_approx() << endl;
-            queue.wait_dequeue(rft);
-            std::tie(rgReturn, ffo, rfo, i1fo, i2fo) = rft;
-            if(ffo.empty() && rfo.empty() && i1fo.empty() && i2fo.empty()){
-                if(++client_count == num_clients){
-                    break;
-                }
-                continue;
-            }
-
-            if( rgReturn.predictedGroup.empty() ) {
-                predictedGroup="unknown";
-            }else{
-                predictedGroup = rgReturn.predictedGroup;
-            }
-	
-            if(rg2FqWriters.find(predictedGroup) == rg2FqWriters.end()){ //new
-                rg2FqWriter = new fqwriters();
-                rg2FqWriters[predictedGroup] = rg2FqWriter;
-
-                string outpairr1   = prefixOut+"/"+predictedGroup+"_"+"r1.fq.gz";
-                string outpairr2   = prefixOut+"/"+predictedGroup+"_"+"r2.fq.gz";
-                string outpairi1   = prefixOut+"/"+predictedGroup+"_"+"i1.fq.gz";
-                string outpairi2   = prefixOut+"/"+predictedGroup+"_"+"i2.fq.gz";
-
-                string outpairr1f   = prefixOut+"/"+predictedGroup+"_"+"r1.fail.fq.gz";
-                string outpairr2f   = prefixOut+"/"+predictedGroup+"_"+"r2.fail.fq.gz";
-                string outpairi1f   = prefixOut+"/"+predictedGroup+"_"+"i1.fail.fq.gz";
-                string outpairi2f   = prefixOut+"/"+predictedGroup+"_"+"i2.fail.fq.gz";
-
-                rg2FqWriter->pairr1.open( outpairr1.c_str(),  ios::out);
-                rg2FqWriter->pairr1f.open(outpairr1f.c_str(), ios::out);
-	    	    
-                rg2FqWriter->pairi1.open( outpairi1.c_str(),  ios::out);
-                rg2FqWriter->pairi1f.open(outpairi1f.c_str(), ios::out);
-
-                if(!rg2FqWriter->pairr1.good()){
-                    checkFD(); 
-                    cerr<<"Cannot write to file "<< outpairr1 <<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl;
-                    exit(1); 
-                }
-                if(!rg2FqWriter->pairr1f.good()){
-                    checkFD(); 
-                    cerr<<"Cannot write to file "<< outpairr1f<<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl; 
-                    exit(1); 
-                }
-	    	    
-                if(!rg2FqWriter->pairi1.good()){
-                    checkFD(); 
-                    cerr<<"Cannot write to file "<< outpairi1 <<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl; 
-                    exit(1); 
-                }
-                if(!rg2FqWriter->pairi1f.good()){
-                    checkFD(); 
-                    cerr<<"Cannot write to file "<< outpairi1f<<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl;
-                    exit(1); 
-                }
-
-                if(!i2fo.empty()){
-                    rg2FqWriter->pairi2.open( outpairi2.c_str(),  ios::out);
-                    rg2FqWriter->pairi2f.open(outpairi2f.c_str(), ios::out);
-
-                    if(!rg2FqWriter->pairi2.good()){
-                        checkFD(); 
-                        cerr<<"Cannot write to file "<< outpairi2 <<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl;
-                        exit(1);
-                    }
-                    if(!rg2FqWriter->pairi2f.good()){
-                        checkFD(); cerr<<"Cannot write to file "<< outpairi2f<<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl; 
-                        exit(1); 
-                    }
-                }
-
-                if(!rfo.empty()){
-                    rg2FqWriter->pairr2.open( outpairr2.c_str(),  ios::out);
-                    rg2FqWriter->pairr2f.open(outpairr2f.c_str(), ios::out);
-
-                    if(!rg2FqWriter->pairr2.good()){
-                        checkFD(); 
-                        cerr<<"Cannot write to file "<<outpairr2 <<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl;
-                        exit(1);
-                    }
-                    if(!rg2FqWriter->pairr2f.good()){
-                        checkFD();
-                        cerr<<"Cannot write to file "<<outpairr2f<<" either you do not have permissions or you have too many read groups, in that case, convert your input data to a single BAM file and demultiplex it"<<endl; 
-                        exit(1); 
-                    }	   
-                }
-            }//end new rg
-            else{
-                rg2FqWriter = rg2FqWriters[predictedGroup];
-            }
-
-            if(rgReturn.conflict  || rgReturn.wrong || rgReturn.unknown ){ //if the reads fail to meet thresholds
-		rg2FqWriter->pairr1f     << ffo <<endl;
-                rg2FqWriter->pairi1f     << i1fo<<endl;
-                if(!i2fo.empty()){
-                    rg2FqWriter->pairi2f << i2fo<<endl;
-                }
-
-                if(!rfo.empty()){
-                    rg2FqWriter->pairr2f << rfo<<endl;
-                }
-            }else{
-                rg2FqWriter->pairr1     << ffo<<endl;
-                rg2FqWriter->pairi1     << i1fo<<endl;
-                if(!i2fo.empty()){
-                    rg2FqWriter->pairi2 << i2fo<<endl;
-                }
-	    
-                if(!rfo.empty()){
-                    rg2FqWriter->pairr2 << rfo<<endl;
-                }
-            }
-            totalSeqs++;
-        }//end each record in fqpf
-
-        vector<string> allRgsFound  = allKeysMap(rg2FqWriters);
-        for (unsigned int i=0; i<allRgsFound.size();i++){
-            string rgTag = allRgsFound[i];
-
-            rg2FqWriters[rgTag]->pairr1.close( );
-            rg2FqWriters[rgTag]->pairr1f.close();
-	
-            rg2FqWriters[rgTag]->pairi1.close( );
-            rg2FqWriters[rgTag]->pairi1f.close();
-	
-            if(!rg2FqWriters[rgTag]->pairi2){
-                rg2FqWriters[rgTag]->pairi2.close( );
-            }
-            if(!rg2FqWriters[rgTag]->pairi2f){
-                rg2FqWriters[rgTag]->pairi2f.close();
-            }
-            if(!rg2FqWriters[rgTag]->pairr2){
-                rg2FqWriters[rgTag]->pairr2.close( );
-            }
-            if(!rg2FqWriters[rgTag]->pairr2f){
-                rg2FqWriters[rgTag]->pairr2f.close();	   
-            }
-        }
-    }
-
-//    SafeQueue<ResultFastQTuple> queue;
-    moodycamel::BlockingConcurrentQueue<ResultFastQTuple> queue;
-    size_t num_clients, totalSeqs;
-    string prefixOut;
-};
-
 
 void processFastq(string           forwardfq,
 		  string           reversefq,
@@ -1014,23 +1024,21 @@ void processFastq(string           forwardfq,
 		  const bool       printSummary,
 		  const bool       printError,
 		  size_t           num_worker_threads,
-		  size_t           queue_size){
+		  size_t           queue_size,
+                  vector<string>&   pgNames){
 
     size_t max_queue_size = num_worker_threads * queue_size;
 
     //initialize thread objects
     Producer producer(max_queue_size, num_worker_threads, forwardfq, index1fq, reversefq, index2fq);
-    Consumer consumer(max_queue_size, num_worker_threads, prefixOut);
-//    FastQWorker worker(producer.queue, consumer.queue, printSummary, printError);
+    FileSorter fileSorter(prefixOut, pgNames, !reversefq.empty(), !index2fq.empty(), num_worker_threads);
     vector<FastQWorker> workers(
         num_worker_threads,
-        FastQWorker(producer.queue, consumer.queue, printSummary, printError)
+        FastQWorker(producer.queue, fileSorter, printSummary, printError)
     );
 
     //start threads
     std::thread producer_thread(std::ref(producer));
-    std::thread consumer_thread(std::ref(consumer));
-//    std::thread worker_thread(std::ref(worker));
     vector<std::thread> worker_threads;
     for(auto& worker: workers){
         worker_threads.push_back(std::thread(std::ref(worker)));
@@ -1038,8 +1046,6 @@ void processFastq(string           forwardfq,
 
     //join threads
     producer_thread.join();
-    consumer_thread.join();
-//    worker_thread.join();
     for(auto& worker_thread: worker_threads){
         worker_thread.join();
     }
@@ -1062,6 +1068,7 @@ void processFastq(string           forwardfq,
             namesMap[x.first].wrong += x.second.wrong;
         }
     }
+    //fileSorter flushes here
 }
 
 
@@ -1559,12 +1566,16 @@ int main (int argc, char *argv[]) {
 
 
 
-    map<string,string> rgs =readIndexFile(indexStringFile,mismatchesTrie,shiftByOne);
+    map<string,string> rgs = readIndexFile(indexStringFile,mismatchesTrie,shiftByOne);
     map<string,int> unknownSeq;
     map<string,int> wrongSeq;
     map<string,int> conflictSeq;
     
     if(useFastq){
+        vector<string> rgNames;
+        for(auto& kvp: rgs){
+            rgNames.push_back(kvp.first);
+        }
 
 	processFastq(forwardfq,
 		     reversefq,
@@ -1577,7 +1588,8 @@ int main (int argc, char *argv[]) {
 		     printSummary,
 		     printError,
 		     num_worker_threads,
-		     queue_size);
+		     queue_size,
+                     rgNames);
 
     }else{
 
