@@ -816,24 +816,24 @@ public:
                 }
                 else{
                     if(get<0>(rft).conflict  || get<0>(rft).wrong || get<0>(rft).unknown ){ //if the reads fail to meet thresholds
-                        rg2FqWriter->pairr1f << get<1>(rft) <<endl;
-                        rg2FqWriter->pairi1f << get<3>(rft) <<endl;
+                        rg2FqWriter->pairr1f << get<1>(rft);
+                        rg2FqWriter->pairi1f << get<3>(rft);
                         if(!get<4>(rft).empty()){
-                            rg2FqWriter->pairi2f << get<4>(rft) <<endl;
+                            rg2FqWriter->pairi2f << get<4>(rft);
                         }
 
                         if(!get<2>(rft).empty()){
-                            rg2FqWriter->pairr2f << get<2>(rft) <<endl;
+                            rg2FqWriter->pairr2f << get<2>(rft);
                         }
                     }else{
-                        rg2FqWriter->pairr1 << get<1>(rft) <<endl;
-                        rg2FqWriter->pairi1 << get<3>(rft) <<endl;
+                        rg2FqWriter->pairr1 << get<1>(rft);
+                        rg2FqWriter->pairi1 << get<3>(rft);
                         if(!get<4>(rft).empty()){
-                            rg2FqWriter->pairi2 << get<4>(rft) <<endl;
+                            rg2FqWriter->pairi2 << get<4>(rft);
                         }
 	    
                         if(!get<2>(rft).empty()){
-                            rg2FqWriter->pairr2 << get<2>(rft) <<endl;
+                            rg2FqWriter->pairr2 << get<2>(rft);
                         }
                     }
                 }
@@ -874,7 +874,7 @@ private:
 };
 
 string formatFastQ(FastQEntry* kseq){
-    string ret = "";
+    string ret = "@";
     ret += kseq->name;
     if(!kseq->comment.empty()){
     	ret += " ";
