@@ -45,6 +45,10 @@ public:
     full_cv.notify_one();
     return val;
   }
+  size_t count(void){
+    std::lock_guard<std::mutex> lock(m);
+    return q.size();
+  }
 
 private:
   std::queue<T> q;

@@ -62,3 +62,13 @@ string * FastQObj::getQual() const{
     }
     return qual;
 }
+    
+void FastQObj::formatFastQ(std::string& str) const{
+    str = *id;
+    str += "\n";
+    str += *seq;
+    str += "\n+\n";
+    str += *qual;
+    str += "\n";
+}
+
