@@ -24,6 +24,10 @@
 #include "JSON.h"
 #include "libgab.h"
 
+#include <zlib.h>
+#include "kseq.h"
+KSEQ_INIT(gzFile, gzread)
+
 using namespace std;
 using namespace BamTools;
 
@@ -601,91 +605,95 @@ void checkFD(){
 
 }
 
-typedef std::tuple<FastQObj *, FastQObj *, FastQObj *, FastQObj *> FastQTuple;
+struct FastQEntry{
+    FastQEntry(kseq_t* kseq) : 
+        name(kseq->name.s), 
+        comment(kseq->comment.l ? kseq->comment.s : ""), 
+        seq(kseq->seq.s),
+        qual(kseq->qual.s)
+    {}
+    string name, comment, seq, qual;
+};
+
+class FastQFileReader{
+public:
+    FastQFileReader(const string& filename){
+        fileHandle = gzopen(filename.c_str(), "r");
+        kseq = kseq_init(fileHandle);
+	tthread = std::thread(&FastQFileReader::run, this);
+    }
+    ~FastQFileReader(void){
+        tthread.join();
+	gzclose(fileHandle);
+        delete kseq;
+    }
+    void run(void){
+        FastQEntry* fqe;
+        while(kseq_read(kseq) >=0){
+	    fqe = new FastQEntry(kseq);
+	    while(!queue.try_enqueue(fqe)){} //spin
+        }
+	queue.enqueue(0);
+    }
+    gzFile fileHandle;
+    kseq_t* kseq;
+    moodycamel::BlockingConcurrentQueue<FastQEntry*> queue;  
+    std::thread tthread;
+};
+
+typedef std::tuple<FastQEntry*, FastQEntry*, FastQEntry*, FastQEntry*> FastQTuple;
 typedef std::tuple<rgAssignment, string, string, string, string> ResultFastQTuple;
 
 class Producer{
 public:
-  Producer(size_t max_queue_size, size_t n_clients, string r1f, string i1f, string r2f, string i2f) :
-    queue(max_queue_size), n_clients(n_clients), forwardfq(r1f), index1fq(i1f), reversefq(r2f), index2fq(i2f)
-  {}
+    Producer(size_t max_queue_size, size_t n_clients, string r1f, string i1f, string r2f, string i2f) :
+        queue(max_queue_size), n_clients(n_clients), forwardfq(r1f), index1fq(i1f), reversefq(r2f), index2fq(i2f)
+    {}
 
-  void operator()(void){
-    FastQParser * fqpf=0;
-    FastQParser * fqpr=0;
-    FastQParser * fqpi1=0;
-    FastQParser * fqpi2=0;
+    void operator()(void){
+        FastQFileReader fqpf(forwardfq), fqpr(reversefq), fqpi1(index1fq), fqpi2(index2fq);
+    	FastQEntry* ffo=0;
+    	FastQEntry* rfo=0;
+    	FastQEntry* i1fo=0;
+    	FastQEntry* i2fo=0;
 
-    FastQObj * ffo=0;
-    FastQObj * rfo=0;
-    FastQObj * i1fo=0;
-    FastQObj * i2fo=0;
-    
-    fqpf  = new FastQParser (forwardfq);
-    fqpi1 = new FastQParser (index1fq);
-
-    bool hasRevBool = (!reversefq.empty());
-    bool hasId2Bool = (!index2fq.empty());
-
-    if(hasRevBool)
-      fqpr  = new FastQParser (reversefq);
-
-    if(hasId2Bool)	
-      fqpi2 = new FastQParser (index2fq);
-
-    while(fqpf->hasData()){
-      ffo=fqpf->getData();
-      rfo=0;
-      i1fo=0;
-      i2fo=0;
-
-	if(!fqpi1->hasData()){
-	    cerr << "ERROR: Discrepancy between fastq files at record with first index " <<  *(ffo->getID()) <<endl;
+        fqpf.queue.wait_dequeue(ffo);
+	while(ffo){
+            fqpr.queue.wait_dequeue(rfo);
+            fqpi1.queue.wait_dequeue(i1fo);
+            fqpi2.queue.wait_dequeue(i2fo);
+	    if(rfo==0||i1fo==0||i2fo==0){
+	        cerr << "ERROR: Discrepancy between fastq files at record with first index " <<  ffo->name <<endl;
+	        exit(1);
+            }
+            while(!queue.try_enqueue(FastQTuple(ffo, rfo, i1fo, i2fo))){} //stall while queue is full
+	    fqpf.queue.wait_dequeue(ffo);
+	}
+        fqpr.queue.wait_dequeue(rfo);
+        fqpi1.queue.wait_dequeue(i1fo);
+        fqpi2.queue.wait_dequeue(i2fo);
+	if(rfo!=0){
+	    cerr << "ERROR: Discrepancy between fastq files at record with first index " <<  rfo->name <<endl;
 	    exit(1);
-	}
-	
-	i1fo= fqpi1->getData();
-
-	if(hasId2Bool){
-	    if(!fqpi2->hasData()){
-		cerr << "ERROR: Discrepancy between fastq files at record with second index " <<  *(ffo->getID()) <<endl;
-		exit(1);
-	    }
-	    
-	    i2fo=fqpi2->getData();
-	}
-
-	if(hasRevBool){
-	    if(!fqpr->hasData()){
-		cerr << "ERROR: Discrepency between fastq files at record with second read " <<  *(ffo->getID()) <<endl;
-		exit(1);
-	    }
-
-	    rfo=fqpr->getData();
-
-      }
-      while(!queue.try_enqueue(FastQTuple(ffo, rfo, i1fo, i2fo))){}
-cout << "in_queue " << queue.size_approx() << endl;
-    }
-    for(size_t i=0; i<n_clients; ++i){
-      //end markers
-      queue.enqueue(FastQTuple(0,0,0,0));
+        }
+	if(i1fo!=0){
+	    cerr << "ERROR: Discrepancy between fastq files at record with first index " <<  i1fo->name <<endl;
+	    exit(1);
+        }
+	if(i2fo!=0){
+	    cerr << "ERROR: Discrepancy between fastq files at record with first index " <<  i2fo->name <<endl;
+	    exit(1);
+        }
+        for(size_t i=0; i<n_clients; ++i){
+            //end markers
+            queue.enqueue(FastQTuple(0,0,0,0));
+        }
     }
 
-    delete fqpf;
-    delete fqpi1;
- 
-    if(hasId2Bool)
-      delete fqpi2;
-
-    if(hasRevBool)
-      delete fqpr;
-  }
-
-  moodycamel::BlockingConcurrentQueue<FastQTuple> queue;  
+    moodycamel::BlockingConcurrentQueue<FastQTuple> queue;  
 //  SafeQueue<FastQTuple> queue;  
-  size_t n_clients;
-  string forwardfq, index1fq, reversefq, index2fq;
+    size_t n_clients;
+    string forwardfq, index1fq, reversefq, index2fq;
 };
 
 class FileThread{
@@ -792,12 +800,9 @@ public:
         delete rg2FqWriter;
     }
     void enqueue(const ResultFastQTuple& rft){
-        cout << "eq" << endl;
         while(!queue.try_enqueue(rft)){
-            std::this_thread::sleep_for(std::chrono::milliseconds(1)); //dude, chill
-            cout << "   sleep" << endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        cout << "   done" << endl;
     }
     void flush(void){
         size_t count;
@@ -868,6 +873,21 @@ private:
     map<string,FileThread*> fileThreads;
 };
 
+string formatFastQ(FastQEntry* kseq){
+    string ret = "";
+    ret += kseq->name;
+    if(!kseq->comment.empty()){
+    	ret += " ";
+    	ret += kseq->comment;
+    }
+    ret += "\n";
+    ret += kseq->seq;
+    ret += "\n+\n";
+    ret += kseq->qual;
+    ret += "\n";
+    return ret;
+}
+
 class FastQWorker{
 public:
     FastQWorker(moodycamel::BlockingConcurrentQueue<FastQTuple>& in_queue, FileSorter& out_queue, bool printSummary, bool printError) :
@@ -876,10 +896,10 @@ public:
     {}
     
     void operator()(void){
-        FastQObj * ffo=0;
-        FastQObj * rfo=0;
-        FastQObj * i1fo=0;
-        FastQObj * i2fo=0;
+        FastQEntry* ffo=0;
+        FastQEntry* rfo=0;
+        FastQEntry* i1fo=0;
+        FastQEntry* i2fo=0;
 	string ffo_s, rfo_s, i1fo_s, i2fo_s;
 	string index1s, index1q, index2s, index2q;
 	FastQTuple ft;
@@ -890,41 +910,34 @@ public:
             if(ffo==0 && rfo==0 && i1fo==0 && i2fo==0)
                 break;
 
-            vector<string> deff=allTokens( *(ffo->getID()), ' '  );
-            string deffs       =deff[0];
+            string deffs = ffo->name;
             if(strEndsWith(deffs,  "/1")){
                 deffs=deffs.substr(0,deffs.size()-2);
             }
 
-            vector<string> defi1 = allTokens( *(i1fo->getID()), ' '  );
-            string defi1s        = defi1[0];
+            string defi1s = i1fo->name;
 
             if( (deffs != defi1s ) ){
                cerr << "ERROR: Discrepancy between fastq files, different names with first index " <<deffs <<" and "<< defi1s <<endl;
                exit(1);
             }
 
-            index1s = *(i1fo->getSeq());
-            index1q = *(i1fo->getQual());
-
-
+            index1s = i1fo->seq;
+            index1q = i1fo->qual;
 
             if(i2fo){
-                vector<string> defi2 = allTokens( *(i2fo->getID()), ' '  );
-                string defi2s        = defi2[0];
-
+                string defi2s = i2fo->name;
                 if( (deffs != defi2s ) ){
                     cerr << "ERROR: Discrepancy between fastq files, different names with second index " <<deffs <<" and "<< defi2s <<endl;
                     exit(1);
                 }
 
-                index2s =  *(i2fo->getSeq());
-                index2q =  *(i2fo->getQual());
+                index2s =  i2fo->seq;
+                index2q =  i2fo->qual;
             }
 
 	    if(rfo){
-                vector<string> defr=allTokens( *(rfo->getID()), ' '  );
-                string defrs       =defr[0];
+                string defrs = rfo->name;
 	    
                 if(strEndsWith(defrs,  "/2")){
                     defrs=defrs.substr(0,defrs.size()-2);
@@ -991,10 +1004,10 @@ public:
             //////////////////////////
             //  END update counters //
             //////////////////////////
-	    ffo->formatFastQ(ffo_s);
-	    if(rfo){rfo->formatFastQ(rfo_s);} else {rfo_s="";}
-	    i1fo->formatFastQ(i1fo_s);
-	    if(i2fo){i2fo->formatFastQ(i2fo_s);} else {i2fo_s="";}
+	    ffo_s = formatFastQ(ffo);
+	    if(rfo){rfo_s = formatFastQ(rfo);} else {rfo_s="";}
+	    i1fo_s = formatFastQ(i1fo);
+	    if(i2fo){i2fo_s = formatFastQ(i2fo);} else {i2fo_s="";}
 
       	    out_queue.enqueue(ResultFastQTuple(rgReturn, ffo_s, rfo_s, i1fo_s, i2fo_s));
 	    delete ffo;
